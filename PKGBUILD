@@ -1,0 +1,189 @@
+# Maintainer: 7Ji <pugokughin@gmail.com>
+
+_desc="phytium official based on LTS"
+
+_pkgbase=linux-aarch64-phytium
+pkgbase=${_pkgbase}-git
+pkgname=(
+  "${pkgbase}"
+  "${pkgbase}-headers"
+)
+pkgver='6.6.63.r507.4850d00965'
+pkgrel=1
+arch=('aarch64')
+url='https://gitee.com/phytium_embedded/phytium-linux-kernel'
+license=('GPL2')
+makedepends=( # Since we don't build the doc, most of the makedeps for other linux packages are not needed here
+  'kmod' 'bc' 'dtc' 'pahole' 'python'
+)
+options=(!strip)
+_srcname="${url##*/}"
+source=(
+  "git+${url}.git#branch=linux-6.6"
+)
+sha256sums=(
+  'SKIP'
+)
+
+prepare() {
+  cd "${_srcname}"
+
+  echo "Setting version..."
+
+  sed -i '/^CONFIG_LOCALVERSION=/d' arch/arm64/configs/phytium_defconfig
+  local _rev_kernel="$(git rev-list --count HEAD)"
+  local _id_kernel="$(git rev-parse --short HEAD)"
+
+  echo - > localversion.09-hyphen
+  echo "r${_rev_kernel}" > localversion.10-rev-kernel
+  echo - > localversion.19-hyphen
+  echo "${_id_kernel}" > localversion.20-id-kernel
+  echo "-${pkgrel}" > localversion.40-pkgrel
+  echo "${pkgbase#linux}" > localversion.50-pkgname
+}
+
+pkgver() {
+  cd "${_srcname}"
+  printf '%s.%s.%s' \
+    "$(make kernelversion)" \
+    "$(<localversion.10-rev-kernel)" \
+    "$(<localversion.20-id-kernel)"
+}
+
+build() {
+  cd "${_srcname}"
+
+  # get kernel version, which will be used later for modules
+  make phytium_defconfig prepare
+  make -s kernelrelease > version
+
+  # Host LDFLAGS or other LDFLAGS set by makepkg/user is not helpful for building kernel: it should links nothing outside of itself
+  unset LDFLAGS
+  # systemd-boot does not support Image.gz, let's use Image
+  # Image and modules are built in the same run to make sure they're compatible with each other
+  # -@ enables symbols in dtbs, so overlay is possible
+  # dtbs are only for Phytium Pi, not for UEFI-native devices
+  make ${MAKEFLAGS} DTC_FLAGS="-@" Image modules dtbs
+}
+
+_package() {
+  pkgdesc="The Linux Kernel and module - ${_desc}"
+  depends=(
+    'coreutils'
+    'initramfs'
+    'kmod'
+  )
+  optdepends=(
+    'linux-firmware: firmware images needed for some devices'
+    'wireless-regdb: to set the correct wireless channels of your country'
+  )
+
+  cd "${_srcname}"
+
+  # Install modules
+  echo "Installing modules..."
+  make INSTALL_MOD_PATH="${pkgdir}/usr" INSTALL_MOD_STRIP=1 modules_install
+
+  # Install DTBs, not to target pkg, but in srcdir, so the later package() routine could use them
+  make INSTALL_DTBS_PATH="${srcdir}/dtbs" dtbs_install
+
+  # Install pkgbase
+  local _dir_module="${pkgdir}/usr/lib/modules/$(<version)"
+  echo "${pkgbase}" | install -D -m 644 /dev/stdin "${_dir_module}/pkgbase"
+
+  # Installi compressed kernel image (this is technically not vmlinuz, but I name it this way to utilize mkinitcpio's existing hooks)
+  install -Dm644 arch/arm64/boot/Image "${_dir_module}/vmlinuz"
+
+  # Remove build and source links, which points to folders used when building (i.e. dead links)
+  rm -f "${_dir_module}/"{build,source}
+
+  # Install DTB
+  echo 'Installing DTBs for Phytium Pi...'
+  install -d -m 755 "${pkgdir}/boot/dtbs/${pkgbase}"
+  cp -t "${pkgdir}/boot/dtbs/${pkgbase}" -a "${srcdir}/dtbs/phytium"
+}
+
+_package-headers() {
+  pkgdesc="Header files and scripts for building modules for linux kernel - ${_desc}"
+  depends=('pahole')
+  
+  # Mostly copied from alarm's linux-aarch64 and modified
+  cd "${_srcname}"
+  local _builddir="${pkgdir}/usr/lib/modules/$(<version)/build"
+
+  echo "Installing build files..."
+  install -Dt "${_builddir}" -m644 .config Makefile Module.symvers System.map \
+    localversion.* version vmlinux
+  install -Dt "${_builddir}/kernel" -m644 kernel/Makefile
+  install -Dt "${_builddir}/arch/arm64" -m644 arch/arm64/Makefile
+  cp -t "${_builddir}" -a scripts
+
+  echo "Installing headers..."
+  cp -t "${_builddir}" -a include
+  cp -t "${_builddir}/arch/arm64" -a arch/arm64/include
+  install -Dt "${_builddir}/arch/arm64/kernel" -m644 arch/arm64/kernel/asm-offsets.s
+
+
+  install -Dt "${_builddir}/drivers/md" -m644 drivers/md/*.h
+  install -Dt "${_builddir}/net/mac80211" -m644 net/mac80211/*.h
+
+  # https://bugs.archlinux.org/task/13146
+  install -Dt "${_builddir}/drivers/media/i2c" -m644 drivers/media/i2c/msp3400-driver.h
+
+  # https://bugs.archlinux.org/task/20402
+  install -Dt "${_builddir}/drivers/media/usb/dvb-usb" -m644 drivers/media/usb/dvb-usb/*.h
+  install -Dt "${_builddir}/drivers/media/dvb-frontends" -m644 drivers/media/dvb-frontends/*.h
+  install -Dt "${_builddir}/drivers/media/tuners" -m644 drivers/media/tuners/*.h
+
+  # https://bugs.archlinux.org/task/71392
+  install -Dt "${_builddir}/drivers/iio/common/hid-sensors" -m644 drivers/iio/common/hid-sensors/*.h
+
+  echo "Installing KConfig files..."
+  find . -name 'Kconfig*' -exec install -Dm644 {} "${_builddir}/{}" \;
+
+  echo "Removing unneeded architectures..."
+  local _arch
+  for _arch in "${_builddir}"/arch/*/; do
+    [[ ${_arch} = */arm64/ ]] && continue
+    echo "Removing $(basename "${_arch}")"
+    rm -r "${_arch}"
+  done
+
+  echo "Removing documentation..."
+  rm -r "${_builddir}/Documentation"
+
+  echo "Removing broken symlinks..."
+  find -L "${_builddir}" -type l -printf 'Removing %P\n' -delete
+
+  echo "Removing loose objects..."
+  find "${_builddir}" -type f -name '*.o' -printf 'Removing %P\n' -delete
+
+  echo "Stripping build tools..."
+  local file
+  while read -rd '' file; do
+    case "$(file -Sib "$file")" in
+      application/x-sharedlib\;*)      # Libraries (.so)
+        strip -v ${STRIP_SHARED} "$file" ;;
+      application/x-archive\;*)        # Libraries (.a)
+        strip -v ${STRIP_STATIC} "$file" ;;
+      application/x-executable\;*)     # Binaries
+        strip -v ${STRIP_BINARIES} "$file" ;;
+      application/x-pie-executable\;*) # Relocatable binaries
+        strip -v ${STRIP_SHARED} "$file" ;;
+    esac
+  done < <(find "${_builddir}" -type f -perm -u+x ! -name vmlinux -print0)
+
+  echo "Stripping vmlinux..."
+  strip -v $STRIP_STATIC "${_builddir}/vmlinux"
+
+  echo "Adding symlink..."
+  mkdir -p "${pkgdir}/usr/src"
+  ln -sr "${_builddir}" "$pkgdir/usr/src/$pkgbase"
+}
+
+for _p in "${pkgname[@]}"; do
+  eval "package_$_p() {
+    $(declare -f "_package${_p#$pkgbase}")
+    _package${_p#$pkgbase}
+  }"
+done
