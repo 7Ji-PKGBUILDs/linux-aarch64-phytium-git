@@ -8,7 +8,7 @@ pkgname=(
   "${pkgbase}"
   "${pkgbase}-headers"
 )
-pkgver='6.6.63.r507.4850d00965'
+pkgver='6.6.63.r808.9a452dbab1'
 pkgrel=1
 arch=('aarch64')
 url='https://gitee.com/phytium_embedded/phytium-linux-kernel'
@@ -30,7 +30,10 @@ prepare() {
 
   echo "Setting version..."
 
-  sed -i '/^CONFIG_LOCALVERSION=/d' arch/arm64/configs/phytium_defconfig
+  sed -i '
+    /^CONFIG_LOCALVERSION=/d
+    s/# CONFIG_WIREGUARD is not set/CONFIG_WIREGUARD=m/
+  ' arch/arm64/configs/phytium_defconfig
   local _rev_kernel="$(git rev-list --count HEAD)"
   local _id_kernel="$(git rev-parse --short HEAD)"
 
