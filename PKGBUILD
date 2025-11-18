@@ -30,10 +30,8 @@ prepare() {
 
   echo "Setting version..."
 
-  sed -i '
-    /^CONFIG_LOCALVERSION=/d
-    s/# CONFIG_WIREGUARD is not set/CONFIG_WIREGUARD=m/
-  ' arch/arm64/configs/phytium_defconfig
+  sed -i '/^CONFIG_LOCALVERSION=/d' arch/arm64/configs/phytium_defconfig
+  echo 'CONFIG_WIREGUARD=m' >> arch/arm64/configs/phytium_defconfig
   local _rev_kernel="$(git rev-list --count HEAD)"
   local _id_kernel="$(git rev-parse --short HEAD)"
 
